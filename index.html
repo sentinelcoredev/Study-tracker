@@ -1,40 +1,108 @@
-# Study---tracker-
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Focus Pen Tracker</title>
+    <title>Exam Focus Tracker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <script src="https://docs.opencv.org/4.5.0/opencv.js"></script>
+    <script src="https://docs.opencv.org/4.5.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
-        body { background: #121212; color: white; font-family: sans-serif; text-align: center; margin: 0; overflow: hidden; }
-        video, canvas { width: 100%; border-radius: 10px; }
-        #status { padding: 10px; font-weight: bold; }
-        .controls { position: fixed; bottom: 20px; width: 100%; display: flex; justify-content: space-around; }
-        button { padding: 15px 25px; border-radius: 50px; border: none; font-weight: bold; }
-        #startBtn { background: #4CAF50; color: white; }
+        body { background: #000; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; margin: 0; overflow: hidden; }
+        /* Make the canvas fill the top area */
+        canvas { width: 100%; max-height: 70vh; background: #222; object-fit: contain; }
+        /* The hidden video element needs to be "technically" visible for some browsers to allow playback */
+        video { position: absolute; top: -9999px; left: -9999px; } 
+
+        #ui-layer { position: fixed; bottom: 0; width: 100%; height: 30vh; background: #1a1a1a; border-top: 2px solid #333; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; }
+        
+        .stats { display: flex; width: 100%; justify-content: space-around; margin-bottom: 10px; }
+        .stat-box { font-size: 14px; color: #aaa; }
+        .stat-val { font-size: 24px; font-weight: bold; color: white; display: block; }
+        
+        button { padding: 15px 30px; font-size: 16px; border-radius: 12px; border: none; font-weight: bold; margin: 5px; cursor: pointer; }
+        #startBtn { background: #00E676; color: #000; width: 80%; }
+        #torchBtn { background: #FFC107; color: #000; width: 80%; display: none; } /* Hidden until camera starts */
+
+        #status { position: fixed; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 5px 10px; border-radius: 5px; font-size: 12px; pointer-events: none; }
     </style>
 </head>
 <body>
-    <div id="status">Ready to Study</div>
-    <video id="videoInput" playsinline style="display:none"></video>
-    <canvas id="canvasOutput"></canvas>
+
+    <div id="status">Loading OpenCV...</div>
+
+    <video id="videoInput" playsinline webkit-playsinline muted autoplay></video>
     
-    <div class="controls">
-        <button id="startBtn" onclick="startTracking()">START SESSION</button>
-        <button id="torchBtn" onclick="toggleTorch()" style="background: #FFC107;">TORCH ON/OFF</button>
+    <canvas id="canvasOutput"></canvas>
+
+    <div id="ui-layer">
+        <div class="stats">
+            <div class="stat-box">FOCUS STREAKS<span id="streakVal" class="stat-val">0</span></div>
+            <div class="stat-box">STATUS<span id="stateVal" class="stat-val" style="color: #00E676;">IDLE</span></div>
+        </div>
+        <button id="startBtn" onclick="startCamera()">START CAMERA</button>
+        <button id="torchBtn" onclick="toggleTorch()">TURN ON FLASHLIGHT</button>
     </div>
 
     <script>
         let video = document.getElementById('videoInput');
-        let lastX = 0, lastY = 0, lastMoveTime = Date.now();
-        let track;
+        let canvas = document.getElementById('canvasOutput');
+        let ctx = canvas.getContext('2d');
+        let stream = null;
+        let streaming = false;
+        let track = null;
 
-        async function startTracking() {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-            video.srcObject = stream;
-            video.play();
-            track = stream.getVideoTracks()[0];
-            processVideo();
+        // Study Logic Variables
+        let lastX = 0, lastY = 0, lastMoveTime = 0;
+        let streaks = 0;
+        let isFocused = true;
+        
+        // Wait for OpenCV to be ready
+        function onOpenCvReady() {
+            document.getElementById('status').innerText = "OpenCV Ready. Tap Start.";
+        }
+
+        async function startCamera() {
+            document.getElementById('status').innerText = "Requesting Camera...";
+            try {
+                // Constraints for Back Camera
+                const constraints = {
+                    video: {
+                        facingMode: { exact: "environment" }, // Forces back camera
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    }
+                };
+
+                // Fallback if "exact" fails (some phones don't like it)
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia(constraints);
+                } catch (e) {
+                    document.getElementById('status').innerText = "Retrying camera...";
+                    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                }
+
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    // Setup Canvas to match Video dimensions
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    streaming = true;
+                    
+                    // Enable Buttons
+                    document.getElementById('startBtn').style.display = "none";
+                    document.getElementById('torchBtn').style.display = "block";
+                    document.getElementById('status').innerText = "Running...";
+                    
+                    // Get Track for Torch
+                    track = stream.getVideoTracks()[0];
+                    
+                    // Reset Timers
+                    lastMoveTime = Date.now();
+                    requestAnimationFrame(processVideo);
+                };
+            } catch (err) {
+                alert("Camera Error: " + err.name + ". Ensure you are on HTTPS and allowed permissions.");
+                document.getElementById('status').innerText = "Error: " + err.message;
+            }
         }
 
         function toggleTorch() {
@@ -42,49 +110,86 @@
                 const capabilities = track.getCapabilities();
                 if (capabilities.torch) {
                     const currentTorch = track.getSettings().torch;
-                    track.applyConstraints({ advanced: [{ torch: !currentTorch }] });
-                } else { alert("Torch not supported on this browser."); }
+                    track.applyConstraints({ advanced: [{ torch: !currentTorch }] })
+                    .catch(e => alert("Torch Error: " + e));
+                } else {
+                    alert("Flashlight control not supported on this device/browser.");
+                }
             }
         }
 
         function processVideo() {
-            let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
-            let hsv = new cv.Mat();
-            let mask = new cv.Mat();
-            let cap = new cv.VideoCapture(video);
+            if (!streaming) return;
 
-            const FPS = 30;
-            function run() {
+            try {
+                let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+                let cap = new cv.VideoCapture(video);
                 cap.read(src);
+
+                let hsv = new cv.Mat();
                 cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
                 cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-                
-                // Blue Pen Range (HSV)
-                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [100, 150, 50, 0]);
+
+                // --- ADJUSTED FOR LOW LIGHT ---
+                // Wider Blue Range. S and V lowered to 50 to catch dark/dim blue.
+                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [90, 50, 50, 0]);
                 let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [140, 255, 255, 255]);
                 
+                let mask = new cv.Mat();
                 cv.inRange(hsv, low, high, mask);
+
+                // Calculate Movement
                 let M = cv.moments(mask, false);
-                if (M.m00 > 500) {
+                if (M.m00 > 200) { // Threshold for "blob size"
                     let cx = M.m10 / M.m00;
                     let cy = M.m01 / M.m00;
                     
-                    if (Math.abs(cx - lastX) > 5 || Math.abs(cy - lastY) > 5) {
+                    // Draw a circle on the pen tip so you KNOW it sees it
+                    let center = new cv.Point(cx, cy);
+                    cv.circle(src, center, 10, [255, 0, 0, 255], 3);
+
+                    // Check if moved
+                    let dist = Math.abs(cx - lastX) + Math.abs(cy - lastY);
+                    if (dist > 10) { // Sensitivity 
                         lastMoveTime = Date.now();
-                        document.body.style.background = "#121212";
+                        if (!isFocused) {
+                            // Recovered focus!
+                            document.getElementById('stateVal').innerText = "FOCUSED";
+                            document.getElementById('stateVal').style.color = "#00E676"; // Green
+                            isFocused = true;
+                        }
                     }
                     lastX = cx; lastY = cy;
-                    // If no movement for 10 seconds
-                    if (Date.now() - lastMoveTime > 10000) { 
-                        document.body.style.background = "red";
-                        if (navigator.vibrate) navigator.vibrate(500);
-                    }
+                }
+
+                // Check Timer (10 Seconds)
+                let timeIdle = Date.now() - lastMoveTime;
+                
+                if (timeIdle > 10000) {
+                    // LOST FOCUS
+                    isFocused = false;
+                    document.getElementById('stateVal').innerText = "WAKE UP!";
+                    document.getElementById('stateVal').style.color = "red";
+                    
+                    // Draw Red Border on Screen
+                    cv.rectangle(src, new cv.Point(0,0), new cv.Point(src.cols, src.rows), [255, 0, 0, 255], 20);
+                    
+                    // Vibrate Phone
+                    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+                } else {
+                    // Update Streak if we held focus for another 60s (Optional logic, currently just simple counter)
+                     // For now, let's just show raw time or keep it simple.
                 }
 
                 cv.imshow('canvasOutput', src);
-                setTimeout(run, 1000 / FPS);
+
+                // Cleanup to prevent memory leaks!
+                src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete();
+                
+                requestAnimationFrame(processVideo);
+            } catch (err) {
+                console.log(err);
             }
-            run();
         }
     </script>
 </body>
