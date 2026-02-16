@@ -1,1 +1,92 @@
 # Study---tracker-
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Focus Pen Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <script src="https://docs.opencv.org/4.5.0/opencv.js"></script>
+    <style>
+        body { background: #121212; color: white; font-family: sans-serif; text-align: center; margin: 0; overflow: hidden; }
+        video, canvas { width: 100%; border-radius: 10px; }
+        #status { padding: 10px; font-weight: bold; }
+        .controls { position: fixed; bottom: 20px; width: 100%; display: flex; justify-content: space-around; }
+        button { padding: 15px 25px; border-radius: 50px; border: none; font-weight: bold; }
+        #startBtn { background: #4CAF50; color: white; }
+    </style>
+</head>
+<body>
+    <div id="status">Ready to Study</div>
+    <video id="videoInput" playsinline style="display:none"></video>
+    <canvas id="canvasOutput"></canvas>
+    
+    <div class="controls">
+        <button id="startBtn" onclick="startTracking()">START SESSION</button>
+        <button id="torchBtn" onclick="toggleTorch()" style="background: #FFC107;">TORCH ON/OFF</button>
+    </div>
+
+    <script>
+        let video = document.getElementById('videoInput');
+        let lastX = 0, lastY = 0, lastMoveTime = Date.now();
+        let track;
+
+        async function startTracking() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+            video.srcObject = stream;
+            video.play();
+            track = stream.getVideoTracks()[0];
+            processVideo();
+        }
+
+        function toggleTorch() {
+            if (track) {
+                const capabilities = track.getCapabilities();
+                if (capabilities.torch) {
+                    const currentTorch = track.getSettings().torch;
+                    track.applyConstraints({ advanced: [{ torch: !currentTorch }] });
+                } else { alert("Torch not supported on this browser."); }
+            }
+        }
+
+        function processVideo() {
+            let src = new cv.Mat(video.height, video.width, cv.CV_8UC4);
+            let hsv = new cv.Mat();
+            let mask = new cv.Mat();
+            let cap = new cv.VideoCapture(video);
+
+            const FPS = 30;
+            function run() {
+                cap.read(src);
+                cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+                cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+                
+                // Blue Pen Range (HSV)
+                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [100, 150, 50, 0]);
+                let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [140, 255, 255, 255]);
+                
+                cv.inRange(hsv, low, high, mask);
+                let M = cv.moments(mask, false);
+                if (M.m00 > 500) {
+                    let cx = M.m10 / M.m00;
+                    let cy = M.m01 / M.m00;
+                    
+                    if (Math.abs(cx - lastX) > 5 || Math.abs(cy - lastY) > 5) {
+                        lastMoveTime = Date.now();
+                        document.body.style.background = "#121212";
+                    }
+                    lastX = cx; lastY = cy;
+                }
+
+                // If no movement for 60 seconds
+                if (Date.now() - lastMoveTime > 60000) {
+                    document.body.style.background = "red";
+                    if (navigator.vibrate) navigator.vibrate(500);
+                }
+
+                cv.imshow('canvasOutput', src);
+                setTimeout(run, 1000 / FPS);
+            }
+            run();
+        }
+    </script>
+</body>
+</html>
