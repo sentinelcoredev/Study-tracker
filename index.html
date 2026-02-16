@@ -74,12 +74,11 @@
                         document.body.style.background = "#121212";
                     }
                     lastX = cx; lastY = cy;
-                }
-
-                // If no movement for 60 seconds
-                if (Date.now() - lastMoveTime > 60000) {
-                    document.body.style.background = "red";
-                    if (navigator.vibrate) navigator.vibrate(500);
+                    // If no movement for 10 seconds
+                    if (Date.now() - lastMoveTime > 10000) { 
+                        document.body.style.background = "red";
+                        if (navigator.vibrate) navigator.vibrate(500);
+                    }
                 }
 
                 cv.imshow('canvasOutput', src);
