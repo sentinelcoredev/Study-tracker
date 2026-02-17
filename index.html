@@ -1,275 +1,90 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Exam Sentinel</title>
-    <script src="https://docs.opencv.org/4.5.0/opencv.js" onload="onOpenCvReady();"></script>
+    <title>Lite Focus Tracker</title>
     <style>
-        :root { --bg: #0d1117; --text: #e6edf3; --accent: #238636; --danger: #da3633; }
-        body { background-color: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; overflow-x: hidden; text-align: center; }
-        
-        /* VIDEO MUST BE TECHNICALLY VISIBLE FOR ANDROID */
-        video { position: absolute; top: 0; left: 0; width: 1px; height: 1px; opacity: 0.01; pointer-events: none; }
-        
-        /* MAIN DISPLAY */
-        #canvasOutput { width: 100%; max-height: 60vh; background: #222; object-fit: contain; border-bottom: 2px solid #30363d; }
-        
-        /* DASHBOARD */
-        .dashboard { padding: 15px; text-align: left; }
-        h3 { margin: 0 0 10px 0; font-size: 16px; color: #8b949e; }
-        
-        /* SIMPLE CSS GRAPH */
-        .chart-container { display: flex; align-items: flex-end; justify-content: space-between; height: 100px; padding: 10px 0; border-bottom: 1px solid #30363d; gap: 2px; }
-        .bar-group { display: flex; flex-direction: column; align-items: center; flex: 1; }
-        .bar { width: 100%; background: var(--accent); opacity: 0.7; border-radius: 2px 2px 0 0; transition: height 0.3s; min-height: 2px; }
-        .bar-label { font-size: 8px; margin-top: 4px; color: #8b949e; }
-        
-        /* CONTROLS */
-        .controls { position: fixed; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 10px; z-index: 100; }
-        button { padding: 15px 25px; border: none; border-radius: 50px; font-weight: bold; font-size: 16px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-        #startBtn { background: var(--accent); color: white; }
-        #stopBtn { background: var(--danger); color: white; display: none; }
-        
-        /* STATUS OVERLAY */
-        #status-pill { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); padding: 8px 16px; border-radius: 20px; font-size: 12px; border: 1px solid #30363d; z-index: 50; }
-        
-        /* ALERT SCREEN */
-        #alert-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: red; opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 20; mix-blend-mode: overlay; }
+        body { background: #000; color: #0f0; font-family: monospace; text-align: center; margin: 0; }
+        #vid { width: 100%; height: 50vh; background: #111; object-fit: cover; border-bottom: 2px solid #333; }
+        canvas { display: none; } /* Hidden processing canvas */
+        .ui { padding: 20px; }
+        .alert { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: red; opacity: 0; pointer-events: none; z-index: 10; }
+        button { padding: 20px; width: 80%; border-radius: 10px; font-weight: bold; background: #0f0; border: none; }
+        #stats { margin-top: 10px; font-size: 12px; }
     </style>
 </head>
 <body>
+    <div id="alertScreen" class="alert"></div>
+    <video id="vid" playsinline muted autoplay></video>
+    <canvas id="c"></canvas>
 
-    <div id="status-pill">Loading AI...</div>
-    <div id="alert-overlay"></div>
-
-    <video id="videoInput" playsinline webkit-playsinline muted autoplay></video>
-    
-    <canvas id="canvasOutput"></canvas>
-
-    <div class="dashboard">
-        <h3>TODAY'S FOCUS (Minutes per Hour)</h3>
-        <div class="chart-container" id="graph">
-            </div>
-        <div style="margin-top:10px; font-size: 14px; color: #aaa;">
-            Session Streak: <b id="streakVal" style="color:white">0</b> | Status: <b id="stateVal">IDLE</b>
-        </div>
-    </div>
-
-    <div class="controls">
-        <button id="startBtn" onclick="initApp()">START STUDYING</button>
-        <button id="stopBtn" onclick="stopApp()">STOP</button>
+    <div class="ui">
+        <div id="status">Ready</div>
+        <button id="btn" onclick="start()">START TRACKING</button>
+        <div id="stats">Stops: <span id="stops">0</span></div>
     </div>
 
     <script>
-        // --- CONFIGURATION ---
-        const TIMER_LIMIT = 10000; // 10 Seconds
-        const CLEANUP_DAYS = 7;
-        
-        // --- STATE ---
-        let video = document.getElementById('videoInput');
-        let canvas = document.getElementById('canvasOutput');
-        let ctx = canvas.getContext('2d');
-        let stream = null;
-        let streaming = false;
-        let lastX = 0, lastY = 0, lastMoveTime = 0;
-        let isFocusing = false;
-        let streakCount = 0;
-        let audioCtx, oscillator;
-        let focusInterval;
+        const v = document.getElementById('vid');
+        const c = document.getElementById('c');
+        const ctx = c.getContext('2d', { alpha: false });
+        let lastMove = Date.now();
+        let lx = 0, ly = 0;
+        let stopCount = 0;
+        let active = false;
 
-        // --- 1. SETUP & DATA MANAGEMENT ---
-        function onOpenCvReady() {
-            document.getElementById('status-pill').innerText = "AI Ready. Tap Start.";
-            loadData();
-            renderGraph();
+        async function start() {
+            document.getElementById('btn').style.display = 'none';
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            v.srcObject = stream;
+            v.onloadedmetadata = () => {
+                v.play();
+                c.width = 160; // LOW RESOLUTION FOR SPEED
+                c.height = 120;
+                active = true;
+                loop();
+            };
         }
 
-        // Storage Logic: "Keep only 7 days"
-        function loadData() {
-            const today = new Date().toISOString().split('T')[0];
-            let data = JSON.parse(localStorage.getItem('studyData') || '{}');
+        function loop() {
+            if (!active) return;
             
-            // Cleanup old keys
-            const keys = Object.keys(data);
-            const limitDate = new Date();
-            limitDate.setDate(limitDate.getDate() - CLEANUP_DAYS);
+            ctx.drawImage(v, 0, 0, 160, 120);
+            const img = ctx.getImageData(0, 0, 160, 120).data;
             
-            keys.forEach(key => {
-                if (new Date(key) < limitDate) delete data[key];
-            });
+            let tx = 0, ty = 0, count = 0;
 
-            // Ensure today exists
-            if (!data[today]) data[today] = new Array(24).fill(0);
-            
-            localStorage.setItem('studyData', JSON.stringify(data));
-        }
-
-        function logMinute() {
-            const today = new Date().toISOString().split('T')[0];
-            const hour = new Date().getHours();
-            let data = JSON.parse(localStorage.getItem('studyData'));
-            data[today][hour] += 1;
-            localStorage.setItem('studyData', JSON.stringify(data));
-            renderGraph();
-        }
-
-        // --- 2. GRAPH RENDERER (Lightweight) ---
-        function renderGraph() {
-            const today = new Date().toISOString().split('T')[0];
-            const data = JSON.parse(localStorage.getItem('studyData'))[today];
-            const container = document.getElementById('graph');
-            container.innerHTML = ''; // Clear
-
-            const maxVal = Math.max(...data, 10); // Scale based on max
-
-            // Create 24 bars (00:00 to 23:00)
-            for (let i = 0; i < 24; i += 2) { // Show every 2nd hour to save space
-                let val = data[i] + (data[i+1] || 0); // Aggregate 2 hours
-                let height = (val / maxVal) * 100;
-                
-                let barHtml = `
-                    <div class="bar-group">
-                        <div class="bar" style="height: ${height}%"></div>
-                        <div class="bar-label">${i}</div>
-                    </div>`;
-                container.innerHTML += barHtml;
-            }
-        }
-
-        // --- 3. SOUND GENERATOR (No Files Needed) ---
-        function playAlarm() {
-            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            
-            // Beep pattern
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-            
-            osc.type = 'square';
-            osc.frequency.setValueAtTime(880, audioCtx.currentTime); // High pitch
-            osc.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.5);
-            
-            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
-
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.5);
-        }
-
-        // --- 4. CAMERA & AI LOOP ---
-        async function initApp() {
-            // User gesture unlocks Audio
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            audioCtx.resume();
-
-            document.getElementById('startBtn').style.display = 'none';
-            document.getElementById('stopBtn').style.display = 'block';
-            document.getElementById('status-pill').innerText = "Starting Camera...";
-
-            try {
-                // Strict constraints for Android Back Camera
-                stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: 'environment', width: {ideal: 640}, height: {ideal: 480} },
-                    audio: false 
-                });
-                
-                video.srcObject = stream;
-                
-                // Force play for Android
-                video.onloadedmetadata = () => {
-                    video.play();
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    streaming = true;
-                    lastMoveTime = Date.now();
-                    
-                    // Start Minute Logger
-                    focusInterval = setInterval(() => {
-                        if (isFocusing) logMinute();
-                    }, 60000);
-                    
-                    document.getElementById('status-pill').innerText = "TRACKING ACTIVE";
-                    requestAnimationFrame(processVideo);
-                };
-            } catch (err) {
-                alert("Camera Blocked: " + err.message + ". Check browser permissions.");
-            }
-        }
-
-        function stopApp() {
-            if (stream) stream.getTracks().forEach(t => t.stop());
-            streaming = false;
-            clearInterval(focusInterval);
-            document.getElementById('startBtn').style.display = 'block';
-            document.getElementById('stopBtn').style.display = 'none';
-            document.getElementById('status-pill').innerText = "Stopped";
-        }
-
-        function processVideo() {
-            if (!streaming) return;
-
-            try {
-                let src = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-                let cap = new cv.VideoCapture(video);
-                cap.read(src);
-
-                let hsv = new cv.Mat();
-                cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-                cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-
-                // BLUE PEN RANGE (Wide for low light)
-                let low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [90, 60, 60, 0]);
-                let high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [140, 255, 255, 255]);
-                
-                let mask = new cv.Mat();
-                cv.inRange(hsv, low, high, mask);
-
-                // Find Center
-                let M = cv.moments(mask, false);
-                if (M.m00 > 200) {
-                    let cx = M.m10 / M.m00;
-                    let cy = M.m01 / M.m00;
-                    
-                    // Visual Indicator
-                    cv.circle(src, new cv.Point(cx, cy), 15, [0, 255, 0, 255], 3);
-
-                    // Check Movement
-                    let dist = Math.abs(cx - lastX) + Math.abs(cy - lastY);
-                    if (dist > 5) {
-                        lastMoveTime = Date.now();
-                        document.getElementById('alert-overlay').style.opacity = 0;
-                        document.getElementById('stateVal').innerText = "FOCUSED";
-                        document.getElementById('stateVal').style.color = "#238636";
-                        isFocusing = true;
-                    }
-                    lastX = cx; lastY = cy;
+            // Simple Blue Pixel Detection
+            for (let i = 0; i < img.length; i += 4) {
+                let r = img[i], g = img[i+1], b = img[i+2];
+                // If pixel is mostly Blue
+                if (b > 80 && b > r * 1.2 && b > g * 1.2) {
+                    let pixelIndex = i / 4;
+                    tx += pixelIndex % 160;
+                    ty += Math.floor(pixelIndex / 160);
+                    count++;
                 }
-
-                // CHECK IDLE TIME
-                if (Date.now() - lastMoveTime > TIMER_LIMIT) {
-                    isFocusing = false;
-                    document.getElementById('stateVal').innerText = "WAKE UP!";
-                    document.getElementById('stateVal').style.color = "red";
-                    
-                    // Trigger Alert (Visual + Sound + Vibrate)
-                    document.getElementById('alert-overlay').style.opacity = 0.5;
-                    if (Date.now() % 1000 < 100) { // Play alarm every second roughly
-                        playAlarm();
-                        if (navigator.vibrate) navigator.vibrate(200);
-                    }
-                }
-
-                cv.imshow('canvasOutput', src);
-                
-                // Cleanup
-                src.delete(); hsv.delete(); low.delete(); high.delete(); mask.delete();
-                requestAnimationFrame(processVideo);
-
-            } catch (err) {
-                console.error(err);
             }
+
+            if (count > 10) {
+                let avgX = tx / count;
+                let avgY = ty / count;
+                
+                // If moved more than 3 pixels
+                if (Math.abs(avgX - lx) > 3 || Math.abs(avgY - ly) > 3) {
+                    lastMove = Date.now();
+                    document.getElementById('alertScreen').style.opacity = 0;
+                }
+                lx = avgX; ly = avgY;
+            }
+
+            // 10 Second Idle Check
+            if (Date.now() - lastMove > 10000) {
+                document.getElementById('alertScreen').style.opacity = 0.5;
+                if (navigator.vibrate) navigator.vibrate(200);
+            }
+
+            setTimeout(loop, 100); // Only run 10 times a second to save battery
         }
     </script>
 </body>
